@@ -2,6 +2,9 @@ import os
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from sentence_transformers import SentenceTransformer 
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 load_dotenv()
 
@@ -23,28 +26,95 @@ except Exception as e:
 # Model yang akan digunakan
 MODEL = 'gemini-2.5-flash' 
 
+# Model Embedding eksternal
+EMBEDDING_MODEL_HF = 'naufalihsan/indonesian-sbert-large'
+print(f"Memuat model Sentence Transformer: {EMBEDDING_MODEL_HF}...")
+try:
+    # Inisialisasi model SentenceTransformer
+    hf_model = SentenceTransformer(EMBEDDING_MODEL_HF)
+    print("Model Sentence Transformer berhasil dimuat.")
+except Exception as e:
+    print(f"Gagal memuat model Sentence Transformer: {e}")
+    exit()
+
+# Data Contoh (Ini akan menjadi *Document* yang Anda *embed* ke Vector DB)
+KNOWLEDGE_BASE = [
+    ("Resep Nasi Goreng Kampung", 
+     "Nasi goreng kampung adalah hidangan nasi yang digoreng dengan bumbu dasar bawang merah, bawang putih, cabai, dan terasi. Biasanya ditambahkan telur, suwiran ayam, dan sawi. Kunci kelezatannya adalah nasi yang didinginkan semalaman dan api besar."),
+    ("Tentang Lengkuas", 
+     "Lengkuas (galangal) adalah rimpang yang sering digunakan dalam masakan Indonesia dan Thailand. Berbeda dengan jahe, rasanya lebih keras, pedas, dan memiliki aroma pinus atau sitrus. Sering digunakan dalam rendang, soto, dan tom yam untuk memberikan aroma khas."),
+    ("Tips Membuat Sambal Terasi", 
+     "Sambal terasi dibuat dari cabai, tomat, bawang merah, dan terasi yang dibakar atau digoreng. Setelah semua bahan dihaluskan, tambahkan gula merah dan garam. Terasi yang bagus adalah kunci umami sambal ini.")
+]
+
+# 1. PRA-PROSES: Membuat Embedding untuk seluruh dokumen di Knowledge Base
+# Dalam Vector DB riil, langkah ini dilakukan sekali saat mengindeks data.
+# documents = [content for title, content in KNOWLEDGE_BASE]
+document_embeddings = hf_model.encode(KNOWLEDGE_BASE) #convert_to_tensor=False
+print(f"Berhasil membuat {len(document_embeddings)} embedding dokumen.")
+
+# Fungsi untuk mencari data relevan menggunakan kemiripan vektor
+def find_relevant_documents_vector(query, knowledge_base, doc_embeddings, top_k=1):
+    """
+    Mencari data paling relevan dari knowledge base menggunakan cosine similarity.
+    Ini adalah simulasi dari apa yang dilakukan oleh Vector Database.
+    """
+    
+    # 2. EMBEDDING QUERY: Buat embedding untuk pertanyaan pengguna
+    query_embedding = hf_model.encode([query]) #convert_to_tensor=False
+    
+    # 3. PENCARIAN (Vector Search): Hitung kemiripan vektor
+    # Menggunakan cosine similarity untuk mengukur kemiripan antara query dan dokumen
+    similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+
+    print(f"Skor kemiripan: {similarities}")
+    
+    # 4. RANKING: Dapatkan indeks dokumen yang paling mirip
+    # np.argsort mengurutkan dari kecil ke besar, [::-1] membalik (dari besar ke kecil)
+    top_indices = np.argsort(similarities)[::-1][:top_k]
+    
+    # 5. RETRIEVAL: Ambil dokumen berdasarkan indeks
+    relevant_docs = []
+    for i in top_indices:
+        # Hanya ambil jika kemiripan di atas batas tertentu (misalnya, 0.5)
+        if similarities[i] > 0.5: 
+            title, content = knowledge_base[i]
+            relevant_docs.append(f"### Judul: {title} (Skor: {similarities[i]:.3f})\n### Konten: {content}")
+            print(f"ambil data dengan similiarity: , {similarities[i]:.3f}, \n### Konten: {content}")
+        else:
+            # Jika skor kemiripan terlalu rendah, hentikan pencarian
+            title, content = knowledge_base[i]
+            print("Tidak similiar")
+            print(f"### Judul: {title} (Skor: {similarities[i]:.3f})\n")
+            break 
+            
+    return "\n---\n".join(relevant_docs) if relevant_docs else "Tidak ada informasi resep yang relevan"
+
 # Tentukan persona, gaya, dan aturan agen
 PERSONA_PROMPT = (
     "Anda adalah 'Juru Masak Cerdas', seorang koki AI yang sangat ramah, penuh semangat, dan ahli dalam masakan Asia Tenggara. "
     "Gaya bahasa Anda santai dan menggugah selera. Selalu tambahkan sedikit saran atau cerita unik tentang masakan yang ditanyakan. "
     "Setiap respons HARUS dimulai dengan sapaan yang bersemangat (misalnya, 'Wah, ide yang bagus!') dan diakhiri dengan ajakan untuk memasak."
     "Tugas utama Anda adalah memberikan resep atau tips memasak."
+    "Sangat penting: JAWAB HANYA BERDASARKAN CONTEXTUAL DATA yang disajikan dalam prompt."
+    "Jika informasi yang dibutuhkan tidak ada dalam CONTEXTUAL DATA, jawab dengan sopan bahwa Anda tidak memiliki resep atau tips terkait, dan alihkan ke topik masakan yang ada dalam database Anda."
     "Bila konteksinya tidak terkait dengan memasak, jawab dengan sopan bahwa Anda hanya fokus pada masakan dan tawarkan untuk membantu dengan resep atau tips memasak."
+    "Mohon jawabnya dengan singkat saja"
 )
 
-PERSONA_PROMPT2 = (
-    "Anda adalah 'Pemain Bola'"
-    "Anda mengerti peraturan bola"
-    "Jangan jawab bila pertanyaannya tidak ada hubungannya dengan bola"
-)
+# PERSONA_PROMPT2 = (
+#     "Anda adalah 'Pemain Bola'"
+#     "Anda mengerti peraturan bola"
+#     "Jangan jawab bila pertanyaannya tidak ada hubungannya dengan bola"
+# )
 
 # --- FUNGSI UTAMA AGENT ---
 
 def jalankan_agent_masak():
     """Mengelola loop percakapan dengan 'Juru Masak Cerdas'."""
     
-    print("--- AI Agent: Juru Masak Cerdas ---")
-    print(f"Model yang digunakan: {MODEL}")
+    print("--- AI Agent: Juru Masak Cerdas (Mode RAG Vektor Aktif) ---")
+    print(f"Model Gen: {MODEL} | Model Emb: {EMBEDDING_MODEL_HF}")
     print("Ketik 'keluar' untuk mengakhiri.")
     print("-" * 35)
 
@@ -55,7 +125,8 @@ def jalankan_agent_masak():
     # Konfigurasi system instruction untuk menyuntikkan persona
     config = types.GenerateContentConfig(
         system_instruction=PERSONA_PROMPT,
-        thinking_config=thinking_config
+        thinking_config=thinking_config,
+        max_output_tokens=100
     )
 
     # Inisialisasi riwayat chat
@@ -75,8 +146,31 @@ def jalankan_agent_masak():
         print("Juru Masak Cerdas (memproses)...")
         
         try:
+            # 1. LANGKAH RAG: Cari dokumen paling relevan menggunakan Vector Search
+            konteks_rag = find_relevant_documents_vector(
+                user_input, 
+                KNOWLEDGE_BASE, 
+                document_embeddings, 
+                top_k=2 # Ambil 2 dokumen paling relevan
+            )
+
+            if(konteks_rag == "Tidak ada informasi resep yang relevan"):
+                print("\nJuru Masak Cerdas: Maaf, saya tidak memiliki informasi terkait resep atau tips memasak berdasarkan pertanyaan Anda. Namun, saya senang membantu Anda dengan resep atau tips memasak lainnya! Apa yang ingin Anda coba masak hari ini?\n")
+                continue
+            
+            # 2. LANGKAH RAG: Susun prompt dengan konteks yang diambil
+            RAG_PROMPT = (
+                f"Gunakan hanya informasi dari CONTEXTUAL DATA untuk menjawab. Jaga persona Anda sebagai 'Juru Masak Cerdas' (ramah, semangat, ahli masakan Asia Tenggara). "
+                f"Jika informasi tidak ada di CONTEXTUAL DATA, katakan Anda tidak dapat menjawabnya. Jawab pertanyaan pengguna: '{user_input}'\n\n"
+                f"### CONTEXTUAL DATA ###\n"
+                f"{konteks_rag}\n"
+                f"### PERTANYAAN PENGGUNA ###\n"
+                f"{user_input}"
+            )
+
+            # print(RAG_PROMPT)
             # Kirim prompt pengguna ke model melalui objek chat
-            response = chat.send_message(user_input)
+            response = chat.send_message(RAG_PROMPT)
             
             # Tampilkan respons dari agen
             print(f"\nJuru Masak Cerdas: {response.text}\n")
