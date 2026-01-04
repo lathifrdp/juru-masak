@@ -39,12 +39,9 @@ except Exception as e:
 
 # Data Contoh (Ini akan menjadi *Document* yang Anda *embed* ke Vector DB)
 KNOWLEDGE_BASE = [
-    ("Resep Nasi Goreng Kampung", 
-     "Nasi goreng kampung adalah hidangan nasi yang digoreng dengan bumbu dasar bawang merah, bawang putih, cabai, dan terasi. Biasanya ditambahkan telur, suwiran ayam, dan sawi. Kunci kelezatannya adalah nasi yang didinginkan semalaman dan api besar."),
-    ("Tentang Lengkuas", 
-     "Lengkuas (galangal) adalah rimpang yang sering digunakan dalam masakan Indonesia dan Thailand. Berbeda dengan jahe, rasanya lebih keras, pedas, dan memiliki aroma pinus atau sitrus. Sering digunakan dalam rendang, soto, dan tom yam untuk memberikan aroma khas."),
-    ("Tips Membuat Sambal Terasi", 
-     "Sambal terasi dibuat dari cabai, tomat, bawang merah, dan terasi yang dibakar atau digoreng. Setelah semua bahan dihaluskan, tambahkan gula merah dan garam. Terasi yang bagus adalah kunci umami sambal ini.")
+    ("Resep Nasi Goreng Kampung", "Bahan: 200g nasi, 2 siung bawang merah, 1 siung bawang putih, 5g terasi. Cara: Tumis bumbu halus lalu masukkan nasi."),
+    ("Tentang Lengkuas", "Rimpang keras beraroma pinus. Tidak bisa dimakan langsung, hanya untuk aroma."),
+    ("Tips Membuat Sambal Terasi", "Gunakan 10g terasi udang kualitas super untuk hasil maksimal.")
 ]
 
 # 1. PRA-PROSES: Membuat Embedding untuk seluruh dokumen di Knowledge Base
@@ -52,6 +49,37 @@ KNOWLEDGE_BASE = [
 # documents = [content for title, content in KNOWLEDGE_BASE]
 document_embeddings = hf_model.encode(KNOWLEDGE_BASE) #convert_to_tensor=False
 print(f"Berhasil membuat {len(document_embeddings)} embedding dokumen.")
+
+# --- FUNCTION CALLING DEFINITION ---
+def hitung_porsi(bahan_dasar: str, jumlah_porsi: int):
+    """Menghitung estimasi kelipatan bahan untuk jumlah porsi tertentu."""
+    return f"Untuk {jumlah_porsi} porsi {bahan_dasar}, bumbunya perlu dikalikan {jumlah_porsi} kali dari resep standar."
+
+def konversi_satuan(jumlah: float, satuan_asal: str, satuan_tujuan: str):
+    """
+    Mengonversi satuan bahan makanan (misal: gram ke sendok makan).
+    """
+    # Logika sederhana: 1 sendok makan (sdm) asumsikan 15 gram
+    if satuan_asal.lower() == "gram" and satuan_tujuan.lower() == "sendok makan":
+        hasil = jumlah / 15
+        return {"hasil": f"{hasil:.1f} sendok makan"}
+    elif satuan_asal.lower() == "siung" and satuan_tujuan.lower() == "gram":
+        hasil = jumlah * 5
+        return {"hasil": f"{hasil} gram"}
+    return {"hasil": "Konversi tidak tersedia, gunakan perkiraan saja."}
+
+def cari_substitusi_bahan(nama_bahan: str):
+    """
+    Memberikan saran bahan pengganti jika bahan utama tidak tersedia.
+    """
+    substitusi = {
+        "terasi": "Kecap asin atau miso paste (untuk rasa umami serupa).",
+        "lengkuas": "Jahe (meskipun aromanya sedikit berbeda).",
+        "bawang merah": "Bawang bombay cincang.",
+        "cabai": "Saus sambal atau bubuk paprika."
+    }
+    saran = substitusi.get(nama_bahan.lower(), "Maaf, saya belum punya saran pengganti untuk bahan itu.")
+    return {"bahan_pengganti": saran}
 
 # Fungsi untuk mencari data relevan menggunakan kemiripan vektor
 def find_relevant_documents_vector(query, knowledge_base, doc_embeddings, top_k=1):
@@ -100,6 +128,7 @@ PERSONA_PROMPT = (
     "Jika informasi yang dibutuhkan tidak ada dalam CONTEXTUAL DATA, jawab dengan sopan bahwa Anda tidak memiliki resep atau tips terkait, dan alihkan ke topik masakan yang ada dalam database Anda."
     "Bila konteksinya tidak terkait dengan memasak, jawab dengan sopan bahwa Anda hanya fokus pada masakan dan tawarkan untuk membantu dengan resep atau tips memasak."
     "Mohon jawabnya dengan singkat saja"
+    "gunakan fungsi 'hitung_porsi', 'konversi_satuan', 'cari_substitusi_bahan' untuk membantu."
 )
 
 # PERSONA_PROMPT2 = (
@@ -126,7 +155,10 @@ def jalankan_agent_masak():
     config = types.GenerateContentConfig(
         system_instruction=PERSONA_PROMPT,
         thinking_config=thinking_config,
-        max_output_tokens=100
+        max_output_tokens=100,
+        tools=[hitung_porsi, konversi_satuan, cari_substitusi_bahan], # Menambahkan fungsi ke model
+        #automatic_function_calling=types.AutomaticFunctionCallingConfig(max_remote_calls=3)
+        automatic_function_calling=types.AutomaticFunctionCallingConfig()
     )
 
     # Inisialisasi riwayat chat
